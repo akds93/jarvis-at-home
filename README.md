@@ -15,8 +15,10 @@ Poor mans Personal Assistant with system access
   - `pyttsx3`
   - `inputimeout`
   - `distro`
+    
 - Install the dependencies using:
-  ```bash
+
+```bash
   pip install -r requirements.txt
 ```
 
