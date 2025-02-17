@@ -1,22 +1,11 @@
-# jarvis-at-home
+# jarvis-at-home (WORK IN PROGRESS)
 Poor mans Personal Assistant with system access
 
 # Quick Overview: Jarvis-At-Home Voice Command Interface
-
-## 1. Repository Setup
-- **Create a new GitHub repository** (e.g., "jarvis-at-home").
-- **Clone the repository** to your local machine.
-- **Add your files**: the main Python script, conversational modelfile, and command modelfile.
-
-## 2. Dependency Installation
-- Create a `requirements.txt` with necessary packages:
-  - `requests`
-  - `SpeechRecognition`
-  - `pyttsx3`
-  - `inputimeout`
-  - `distro`
+    
 - Install the dependencies using:
-  ```bash
+
+```bash
   pip install -r requirements.txt
 ```
 

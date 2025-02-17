@@ -17,8 +17,8 @@ from inputimeout import inputimeout, TimeoutOccurred
 
 # Global constants for Ollama API and model names
 OLLAMA_URL = "http://localhost:11434/api/generate"
-CONVERSATIONAL_MODEL = "jarvis-at-home-model_llama3.2:3Bv1"        # Adjust as needed
-COMMAND_MODEL = "jarvis-at-home-commands_model_qwen2.5-coder:3Bv3"   # Replace with your specialized command model
+CONVERSATIONAL_MODEL = "jarvis-at-home-model_llama3.2:3Bv1"        
+COMMAND_MODEL = "jarvis-at-home-commands_model_qwen2.5-coder:3Bv3"   
 
 # --- System Information ---
 def get_system_info():
