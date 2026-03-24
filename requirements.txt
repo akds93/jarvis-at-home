@@ -1,15 +1,33 @@
-audioop-lts==0.2.1
-distro==1.9.0
+# Core
 PyYAML==6.0.2
-certifi==2025.1.31
-charset-normalizer==3.4.1
-idna==3.10
-inputimeout==1.0.4
-PyAudio==0.2.14
-pyttsx3==2.98
 requests==2.32.3
+
+# Audio I/O
+PyAudio==0.2.14
+audioop-lts==0.2.1
+
+# Speech recognition
 SpeechRecognition==3.14.1
 standard-aifc==3.13.0
 standard-chunk==3.13.0
+
+# Wake word detection
+openwakeword>=0.6.0
+numpy>=1.24.0
+
+# TTS — Piper (primary)
+piper-tts>=1.2.0
+
+# TTS — pyttsx3 (fallback)
+pyttsx3==2.98
+
+# System stats
+psutil>=6.0.0
+
+# Misc
+distro==1.9.0
 typing_extensions==4.12.2
+certifi==2025.1.31
+charset-normalizer==3.4.1
+idna==3.10
 urllib3==2.3.0
