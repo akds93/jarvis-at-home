@@ -1,0 +1,26 @@
+ollama:
+  host: "http://10.25.0.122:11434"
+  # Model used for conversation (chat history supported)
+  conversational_model: "glm4-flash:latest"
+  # Model used to generate shell commands (JSON output)
+  command_model: "glm4-flash:latest"
+  # Model used to classify intent: 'command' vs 'conversation'
+  # Defaults to command_model if not set
+  classifier_model: "glm4-flash:latest"
+
+tts:
+  rate: 170          # Words per minute
+  volume: 1.0        # 0.0 to 1.0
+  voice_index: 0     # Index into available pyttsx3 voices (run list_voices.py to see options)
+
+stt:
+  timeout: 15              # Max seconds to wait for speech
+  confirmation_timeout: 5  # Max seconds to wait for yes/no confirmation
+
+kde_connect:
+  enabled: false
+  device_id: ""  # Run: kdeconnect-cli -l  to find your device ID
+
+behavior:
+  confirmation_pause: 3   # Seconds to pause after a command interaction
+  max_history: 20         # Max conversation turns to keep in memory (0 = unlimited)
