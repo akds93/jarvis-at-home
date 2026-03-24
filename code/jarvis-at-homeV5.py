@@ -762,39 +762,48 @@ def _time_greeting() -> str:
 # Section 22 — Dispatch (Intent Router)
 # =============================================================================
 def dispatch(intent: str, data: str, raw_text: str):
+    _history.append({"role": "user", "content": raw_text})
+    _trim_history()
+
     if intent == "system_stats":
-        speak(get_system_stats())
+        reply = get_system_stats()
+        speak(reply)
 
     elif intent == "weather":
-        speak(get_weather(data))
+        reply = get_weather(data)
+        speak(reply)
 
     elif intent == "web_search":
-        speak(web_search(data or raw_text))
+        reply = web_search(data or raw_text)
+        speak(reply)
 
     elif intent == "media_control":
-        speak(media_control(data))
+        reply = media_control(data)
+        speak(reply)
 
     elif intent == "set_reminder":
         try:
             rd = json.loads(data)
-            speak(set_reminder(rd["message"], float(rd["seconds"])))
+            reply = set_reminder(rd["message"], float(rd["seconds"]))
         except Exception:
-            speak(f"I couldn't parse that reminder request, {USER_NAME}.")
+            reply = f"I couldn't parse that reminder request, {USER_NAME}."
+        speak(reply)
 
     elif intent == "file_search":
-        speak(file_search(data or raw_text))
+        reply = file_search(data or raw_text)
+        speak(reply)
 
     elif intent == "command":
         _handle_command_flow(data or raw_text)
+        reply = None  # command flow speaks for itself
 
     else:
-        # conversation — add user message and stream response
-        _history.append({"role": "user", "content": raw_text})
-        _trim_history()
+        # conversation — stream response
         reply = _stream_and_speak(_history)
-        if reply:
-            _history.append({"role": "assistant", "content": reply})
-            save_history()
+
+    if reply:
+        _history.append({"role": "assistant", "content": reply})
+    save_history()
 
 
 def _handle_command_flow(instruction: str):
