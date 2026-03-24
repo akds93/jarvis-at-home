@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 import json
-import requests
+import logging
+import os
+import platform
+import shlex
 import subprocess
+import time
+
+import requests
 import speech_recognition as sr
 import pyttsx3
-import platform
-import time
-import os
+import yaml
 
 try:
     import distro
@@ -15,233 +19,298 @@ except ImportError:
 
 from inputimeout import inputimeout, TimeoutOccurred
 
-# Global constants for Ollama API and model names
-OLLAMA_URL = "http://localhost:11434/api/generate"
-CONVERSATIONAL_MODEL = "jarvis-at-home-model_llama3.2:3Bv1"        
-COMMAND_MODEL = "jarvis-at-home-commands_model_qwen2.5-coder:3Bv3"   
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+log = logging.getLogger("jarvis")
 
-# --- System Information ---
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(_SCRIPT_DIR, "..", "config.yaml")
+
+def load_config():
+    path = os.path.normpath(CONFIG_PATH)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Config file not found: {path}")
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+
+cfg = load_config()
+
+OLLAMA_HOST         = cfg["ollama"]["host"].rstrip("/")
+OLLAMA_GENERATE_URL = f"{OLLAMA_HOST}/api/generate"
+OLLAMA_CHAT_URL     = f"{OLLAMA_HOST}/api/chat"
+CONV_MODEL          = cfg["ollama"]["conversational_model"]
+CMD_MODEL           = cfg["ollama"]["command_model"]
+CLASSIFIER_MODEL    = cfg["ollama"].get("classifier_model", CMD_MODEL)
+
+# ---------------------------------------------------------------------------
+# System info
+# ---------------------------------------------------------------------------
 def get_system_info():
     os_name = platform.system()
     if os_name == "Linux":
-        # Try to get distro information; fall back if not available
-        if distro:
-            dist_name = distro.name() or "Linux"
-            dist_version = distro.version() or ""
-        else:
-            dist_name = "Linux"
-            dist_version = ""
-        # Get desktop environment info from environment variables
-        de = os.environ.get("XDG_CURRENT_DESKTOP") or os.environ.get("DESKTOP_SESSION") or "Unknown DE"
+        dist_name    = distro.name()    if distro else "Linux"
+        dist_version = distro.version() if distro else ""
+        de = (os.environ.get("XDG_CURRENT_DESKTOP")
+              or os.environ.get("DESKTOP_SESSION")
+              or "Unknown DE")
         return f"{os_name} ({dist_name} {dist_version}, {de})"
-    else:
-        return os_name
+    return os_name
 
 SYSTEM_INFO = get_system_info()
+log.info(f"System: {SYSTEM_INFO}")
 
-# --- TTS Initialization ---
-tts_engine = pyttsx3.init()
-tts_engine.setProperty('voice', 26)  # Adjust index as needed for a natural-sounding voice
-tts_engine.setProperty('rate', 170)  # Lower speaking rate for clarity
+# ---------------------------------------------------------------------------
+# TTS
+# ---------------------------------------------------------------------------
+_tts = pyttsx3.init()
+_voices = _tts.getProperty("voices")
+_voice_idx = cfg["tts"].get("voice_index", 0)
+if _voices:
+    _voice_idx = max(0, min(_voice_idx, len(_voices) - 1))
+    _tts.setProperty("voice", _voices[_voice_idx].id)
+_tts.setProperty("rate",   cfg["tts"].get("rate",   170))
+_tts.setProperty("volume", cfg["tts"].get("volume", 1.0))
 
-def text_to_speech(text):
-    """Convert text to speech using pyttsx3."""
-    tts_engine.say(text)
-    tts_engine.runAndWait()
+def speak(text: str):
+    log.info(f"Jarvis: {text}")
+    _tts.say(text)
+    _tts.runAndWait()
 
-# --- Helper to clean JSON responses ---
-def clean_json_response(text):
-    """Remove markdown code block markers from the text."""
+# ---------------------------------------------------------------------------
+# STT
+# ---------------------------------------------------------------------------
+def listen_audio(timeout: int = None) -> str | None:
+    if timeout is None:
+        timeout = cfg["stt"].get("timeout", 15)
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        recognizer.adjust_for_ambient_noise(source, duration=0.3)
+        log.info(f"Listening (up to {timeout}s)...")
+        try:
+            audio = recognizer.listen(source, timeout=timeout)
+            text  = recognizer.recognize_google(audio)
+            log.info(f"You said: {text}")
+            return text
+        except sr.WaitTimeoutError:
+            log.info("No speech detected.")
+            return None
+        except sr.UnknownValueError:
+            log.info("Could not understand audio.")
+            return None
+        except sr.RequestError as e:
+            log.error(f"STT service error: {e}")
+            return None
+
+def voice_confirmation(prompt: str, timeout: int = None) -> bool:
+    if timeout is None:
+        timeout = cfg["stt"].get("confirmation_timeout", 5)
+    speak(prompt)
+    response = listen_audio(timeout=timeout)
+    if response:
+        return any(w in response.lower() for w in ["yes", "yeah", "yep", "run it", "do it", "confirm", "go"])
+    # Typed fallback
+    try:
+        typed = inputimeout(prompt="No voice detected. Type yes/no: ", timeout=10).strip().lower()
+        return typed in ("yes", "y")
+    except TimeoutOccurred:
+        return False
+
+# ---------------------------------------------------------------------------
+# Ollama helpers
+# ---------------------------------------------------------------------------
+def _post(url: str, payload: dict) -> dict | None:
+    try:
+        r = requests.post(url, json=payload, timeout=60)
+        if r.ok:
+            return r.json()
+        log.error(f"Ollama error {r.status_code}: {r.text[:200]}")
+    except requests.exceptions.ConnectionError:
+        log.error(f"Cannot reach Ollama at {OLLAMA_HOST}. Is it running?")
+    except Exception as e:
+        log.error(f"Ollama request failed: {e}")
+    return None
+
+def _clean_json(text: str) -> str:
     text = text.strip()
     if text.startswith("```json"):
-        text = text[len("```json"):].strip()
+        text = text[7:].strip()
+    elif text.startswith("```"):
+        text = text[3:].strip()
     if text.endswith("```"):
         text = text[:-3].strip()
     return text
 
-# --- Voice Confirmation with Fallback ---
-def voice_confirmation(prompt_text, timeout=5):
-    """
-    Ask for confirmation by speaking the prompt and listening for the response.
-    Returns True if the response contains 'yes' or 'run it', otherwise False.
-    Falls back to typed input if no voice is detected.
-    """
-    text_to_speech(prompt_text)
-    print(prompt_text)
-    try:
-        response = listen_audio(timeout=timeout)
-        if response:
-            print("DEBUG: Voice confirmation response:", response)
-            if "yes" in response.lower() or "run it" in response.lower():
-                return True
-            else:
-                return False
-        else:
-            fallback = input("No voice input detected. Type yes or no: ").strip().lower()
-            return fallback == "yes"
-    except Exception as e:
-        print("Voice confirmation error:", e)
-        return False
+# ---------------------------------------------------------------------------
+# Conversation (with history)
+# ---------------------------------------------------------------------------
+_history: list[dict] = []
+_MAX_HISTORY = cfg["behavior"].get("max_history", 20)
 
-# --- Audio Capture and Speech-to-Text ---
-def listen_audio(timeout=15):
-    """Listen for audio from the microphone and return the transcribed text."""
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        print(f"Listening (up to {timeout} seconds)...")
-        try:
-            audio = recognizer.listen(source, timeout=timeout)
-            text = recognizer.recognize_google(audio)
-            print("You said:", text)
-            return text
-        except sr.WaitTimeoutError:
-            print(f"No speech detected within {timeout} seconds.")
-            return None
-        except sr.UnknownValueError:
-            print("Could not understand the audio.")
-            return None
-        except sr.RequestError as e:
-            print("STT error:", e)
-            return None
-
-# --- Ollama API Interaction ---
-def query_ollama(model, prompt, stream=False):
-    """
-    Send a prompt to the Ollama API using the specified model.
-    Returns the JSON response or None if there's an error.
-    """
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": stream
-    }
-    try:
-        response = requests.post(OLLAMA_URL, json=payload)
-        if response.ok:
-            return response.json()
-        else:
-            print("Ollama API error:", response.text)
-            return None
-    except Exception as e:
-        print("Error querying Ollama:", e)
-        return None
-
-# --- Command Detection and Processing ---
-def detect_command(text):
-    """Simple keyword-based command detection with debug output."""
-    command_keywords = ["open", "launch", "execute", "run", "shutdown"]
-    text_lower = text.lower()
-    for keyword in command_keywords:
-        if keyword in text_lower:
-            print(f"DEBUG: Detected keyword '{keyword}' in '{text_lower}'")
-            return True
-    print(f"DEBUG: No command keyword found in '{text_lower}'")
-    return False
-
-def get_command_from_llm(command_prompt):
-    """
-    Query the specialized command model to translate natural language
-    into a structured system command. Expects a JSON-formatted response.
-    """
-    result = query_ollama(COMMAND_MODEL, command_prompt, stream=False)
-    print("DEBUG: Command model raw result:", result)
+def chat(user_input: str) -> str:
+    _history.append({"role": "user", "content": user_input})
+    # Trim history if needed (keep pairs: user + assistant)
+    if _MAX_HISTORY > 0 and len(_history) > _MAX_HISTORY * 2:
+        del _history[: len(_history) - _MAX_HISTORY * 2]
+    result = _post(OLLAMA_CHAT_URL, {"model": CONV_MODEL, "messages": _history, "stream": False})
     if result:
-        response_text = result.get("response", "{}")
-        print("DEBUG: Command model response text:", response_text)
-        cleaned_text = clean_json_response(response_text)
-        print("DEBUG: Cleaned command model response text:", cleaned_text)
+        reply = result.get("message", {}).get("content", "").strip()
+        _history.append({"role": "assistant", "content": reply})
+        return reply
+    return "I'm sorry, I didn't get a response from the language model."
+
+# ---------------------------------------------------------------------------
+# Intent classification
+# ---------------------------------------------------------------------------
+_CLASSIFY_PROMPT = (
+    "Classify the following user input as either 'command' (a request to perform a "
+    "system action: open/launch/run/close/shutdown something) or 'conversation' "
+    "(anything else: questions, chat, opinions, etc.).\n"
+    "Reply with exactly one word: command OR conversation.\n"
+    "Input: {input}"
+)
+
+_FALLBACK_KEYWORDS = ["open", "launch", "execute", "run", "shutdown", "close", "kill", "start"]
+
+def is_command(text: str) -> bool:
+    result = _post(OLLAMA_GENERATE_URL, {
+        "model":  CLASSIFIER_MODEL,
+        "prompt": _CLASSIFY_PROMPT.format(input=text),
+        "stream": False,
+    })
+    if result:
+        reply = result.get("response", "").strip().lower()
+        log.info(f"Intent classified as: {reply!r}")
+        return "command" in reply
+    # Fallback: keyword scan
+    log.warning("Classifier unavailable, falling back to keyword detection.")
+    return any(k in text.lower() for k in _FALLBACK_KEYWORDS)
+
+# ---------------------------------------------------------------------------
+# Command generation & execution
+# ---------------------------------------------------------------------------
+_CMD_PROMPT = (
+    "System: {system_info}.\n"
+    "Convert the following natural language instruction into a JSON object with a "
+    "single key 'command' containing the exact shell command appropriate for this "
+    "system. Use KDE-compatible applications (e.g. 'konsole' for terminal). "
+    "Return only the JSON object — no explanation, no markdown.\n"
+    "Instruction: {instruction}"
+)
+
+def get_command(user_input: str) -> str | None:
+    prompt = _CMD_PROMPT.format(system_info=SYSTEM_INFO, instruction=user_input)
+    result = _post(OLLAMA_GENERATE_URL, {"model": CMD_MODEL, "prompt": prompt, "stream": False})
+    if result:
+        raw     = result.get("response", "{}")
+        cleaned = _clean_json(raw)
         try:
-            command_data = json.loads(cleaned_text)
-            return command_data
+            data = json.loads(cleaned)
+            return data.get("command")
         except json.JSONDecodeError:
-            print("Failed to parse command response as JSON.")
-            return None
+            log.error(f"Failed to parse command JSON: {cleaned!r}")
     return None
 
-def get_command_summary(command_str):
-    """
-    Use the conversational model to generate a one-sentence summary
-    of what the proposed command does.
-    """
-    summary_prompt = f"Summarize in one sentence what the following command does: {command_str}"
-    result = query_ollama(CONVERSATIONAL_MODEL, summary_prompt, stream=False)
+def get_command_summary(command_str: str) -> str:
+    result = _post(OLLAMA_GENERATE_URL, {
+        "model":  CONV_MODEL,
+        "prompt": f"In one short sentence, what does this shell command do: {command_str}",
+        "stream": False,
+    })
     if result:
-        summary = result.get("response", "")
-        return summary
+        return result.get("response", "").strip()
     return ""
 
-# --- KDE Connect and Command Execution ---
-def push_command_via_kde(command_text):
-    """Push the command text to your phone using KDE Connect."""
+def execute_command(command_str: str) -> bool:
     try:
-        subprocess.run(["kdeconnect-cli", "--send-notification", f"Command: {command_text}"], check=True)
-        print("Command pushed to phone for inspection.")
+        args = shlex.split(command_str)
+        subprocess.Popen(args)
+        log.info(f"Launched: {command_str}")
+        return True
     except Exception as e:
-        print("Error sending KDE Connect notification:", e)
+        log.error(f"Execution failed: {e}")
+        speak("Sorry, the command failed to execute.")
+        return False
 
-def execute_command(command_str):
-    """Execute the given command string on the local system."""
+# ---------------------------------------------------------------------------
+# KDE Connect
+# ---------------------------------------------------------------------------
+def push_to_phone(text: str):
+    kc = cfg.get("kde_connect", {})
+    if not kc.get("enabled"):
+        return
+    cmd = ["kdeconnect-cli", "--send-notification", f"Jarvis: {text}"]
+    device_id = kc.get("device_id", "")
+    if device_id:
+        cmd += ["--device", device_id]
     try:
-        subprocess.run(command_str.split(), check=True)
-        print("Command executed successfully.")
+        subprocess.run(cmd, check=True)
+        log.info("Notification sent via KDE Connect.")
     except Exception as e:
-        print("Command execution failed:", e)
+        log.error(f"KDE Connect error: {e}")
 
-# --- Main Loop ---
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
 def main_loop():
-    print("Starting voice command interface...")
+    log.info(f"Jarvis-at-Home starting | {SYSTEM_INFO}")
+    log.info(f"Ollama host : {OLLAMA_HOST}")
+    log.info(f"Conv model  : {CONV_MODEL}")
+    log.info(f"Cmd model   : {CMD_MODEL}")
+    speak("Jarvis online. How can I help?")
+
     while True:
-        # Step 1: Capture audio and transcribe
-        user_input = listen_audio()
-        if not user_input:
-            continue
+        try:
+            user_input = listen_audio()
+            if not user_input:
+                continue
 
-        # Check if the input is a command before processing as conversation
-        if detect_command(user_input):
-            print("DEBUG: Command detected in input.")
-            if voice_confirmation("Command detected. Do you want to issue this command? Please say yes or no.", timeout=15):
-                # Here we include explicit instructions for KDE/Manjaro KDE:
-                command_prompt = (
-                    f"This system is running on {SYSTEM_INFO}. "
-                    "Please convert the following instruction into a JSON object with a single key 'command' that is appropriate for a Manjaro KDE environment. "
-                    "Do not output generic commands such as 'gnome-terminal'; instead, use 'konsole' or another KDE-compatible terminal. "
-                    f"Instruction: {user_input}"
-                )
-                print(f"DEBUG: command prompt: {command_prompt}")
-                command_details = get_command_from_llm(command_prompt)
-                if command_details and "command" in command_details:
-                    command_str = command_details["command"]
-                    print("Command generated:", command_str)
-                    text_to_speech(f"Proposed command: {command_str}")
-                    summary = get_command_summary(command_str)
-                    if summary:
-                        print("Command summary:", summary)
-                        text_to_speech(f"Summary: {summary}")
-                    else:
-                        print("No summary generated.")
-                    if voice_confirmation("Do you want to execute the above command? Please say yes or no.", timeout=5):
-                        execute_command(command_str)
-                    else:
-                        print("Command execution canceled.")
+            if is_command(user_input):
+                # --- Command flow ---
+                if not voice_confirmation(
+                    "I detected a command request. Do you want to proceed? Say yes or no."
+                ):
+                    speak("Okay, cancelled.")
+                    continue
+
+                command_str = get_command(user_input)
+                if not command_str:
+                    speak("Sorry, I couldn't generate a command for that.")
+                    continue
+
+                log.info(f"Generated command: {command_str}")
+                speak(f"Proposed command: {command_str}")
+
+                summary = get_command_summary(command_str)
+                if summary:
+                    speak(f"This will: {summary}")
+
+                push_to_phone(command_str)
+
+                if voice_confirmation("Shall I run it? Say yes or no."):
+                    if execute_command(command_str):
+                        speak("Done.")
                 else:
-                    print("Could not generate a valid command.")
+                    speak("Command cancelled.")
+
+                time.sleep(cfg["behavior"].get("confirmation_pause", 3))
+
             else:
-                print("Command not confirmed.")
-            # Pause before listening again to allow interaction to finish.
-            time.sleep(3)
-            print("\n--- Waiting for next input ---\n")
-            continue
+                # --- Conversation flow ---
+                reply = chat(user_input)
+                speak(reply)
 
-        # Otherwise, process as normal conversation
-        conv_response_data = query_ollama(CONVERSATIONAL_MODEL, user_input, stream=False)
-        if conv_response_data:
-            conv_response = conv_response_data.get("response", "")
-            print("Conversational LLM response:", conv_response)
-            text_to_speech(conv_response)
-        else:
-            print("No valid response from the conversational model.")
+        except KeyboardInterrupt:
+            speak("Shutting down. Goodbye.")
+            log.info("Exiting.")
+            break
+        except Exception as e:
+            log.error(f"Unexpected error: {e}")
 
-        print("\n--- Waiting for next input ---\n")
 
 if __name__ == "__main__":
     main_loop()
