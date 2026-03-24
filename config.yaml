@@ -1,26 +1,87 @@
+# =============================================================================
+# Jarvis-at-Home — configuration file
+# Edit model names, paths, and thresholds here. No code changes needed.
+# =============================================================================
+
 ollama:
   host: "http://10.25.0.122:11434"
-  # Model used for conversation (chat history supported)
+  # Model for conversation turns (sent to /api/chat with full history)
   conversational_model: "glm4-flash:latest"
-  # Model used to generate shell commands (JSON output)
+  # Model for generating shell commands (sent to /api/generate)
   command_model: "glm4-flash:latest"
-  # Model used to classify intent: 'command' vs 'conversation'
-  # Defaults to command_model if not set
+  # Model for intent classification — defaults to command_model if omitted
   classifier_model: "glm4-flash:latest"
+  # HTTP timeout in seconds for all Ollama requests
+  request_timeout: 60
 
+# -----------------------------------------------------------------------------
 tts:
-  rate: 170          # Words per minute
-  volume: 1.0        # 0.0 to 1.0
-  voice_index: 0     # Index into available pyttsx3 voices (run list_voices.py to see options)
+  # "piper" (natural voice, recommended) or "pyttsx3" (robotic, always works)
+  engine: "piper"
+  piper:
+    # Full path to the .onnx voice model file
+    # Download from: https://huggingface.co/rhasspy/piper-voices
+    # Recommended: en_US-lessac-medium or en_US-ryan-high
+    model_path: "/home/user/.local/share/piper/en_US-lessac-medium.onnx"
+    # Sample rate your voice model produces (check the .onnx.json file)
+    sample_rate: 22050
+  pyttsx3:
+    rate: 170        # words per minute
+    volume: 1.0      # 0.0–1.0
+    voice_index: 0   # index into pyttsx3 voice list (run: python3 -c "import pyttsx3; e=pyttsx3.init(); [print(i,v.id) for i,v in enumerate(e.getProperty('voices'))]")
 
+# -----------------------------------------------------------------------------
 stt:
-  timeout: 15              # Max seconds to wait for speech
-  confirmation_timeout: 5  # Max seconds to wait for yes/no confirmation
+  # Seconds to wait for speech input
+  listen_timeout: 10
+  # Seconds to wait for a yes/no voice confirmation
+  confirmation_timeout: 5
+  # PyAudio input device index (-1 = system default)
+  device_index: -1
+  # Ambient noise calibration duration in seconds
+  calibration_duration: 0.4
 
+# -----------------------------------------------------------------------------
+wake_word:
+  enabled: true
+  # openwakeword model name — "hey_jarvis" ships with openwakeword
+  model: "hey_jarvis"
+  # Detection threshold 0.0–1.0 (higher = fewer false positives)
+  threshold: 0.5
+  # Audio chunk duration in seconds fed to the wake word model
+  chunk_duration: 0.08
+
+# -----------------------------------------------------------------------------
+behavior:
+  # How Jarvis addresses you
+  user_name: "Sir"
+  # Max conversation turn pairs to keep in memory (0 = unlimited)
+  max_history: 20
+  # Persistent history file path (~ is expanded)
+  history_path: "~/.local/share/jarvis/history.json"
+  # Seconds to pause after a command interaction before re-listening
+  confirmation_pause: 2
+  # Ask for voice confirmation before running any shell command
+  require_confirmation: true
+
+# -----------------------------------------------------------------------------
+system_monitor:
+  enabled: true
+  # Seconds between background health checks
+  interval: 60
+  # Speak an alert when CPU or disk usage exceeds these percentages
+  cpu_alert_percent: 90.0
+  disk_alert_percent: 90.0
+  # Filesystem path to check for disk usage
+  disk_path: "/"
+
+# -----------------------------------------------------------------------------
+weather:
+  # City/location string for wttr.in — leave empty to auto-detect by IP
+  location: ""
+
+# -----------------------------------------------------------------------------
 kde_connect:
   enabled: false
-  device_id: ""  # Run: kdeconnect-cli -l  to find your device ID
-
-behavior:
-  confirmation_pause: 3   # Seconds to pause after a command interaction
-  max_history: 20         # Max conversation turns to keep in memory (0 = unlimited)
+  # Run: kdeconnect-cli -l    to find your device ID
+  device_id: ""
